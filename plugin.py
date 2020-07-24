@@ -1,15 +1,16 @@
 # Make coding more python3-ish, this is required for contributions to Ansible
 from __future__ import absolute_import, division, print_function
 
-import json
-from pprint import pformat
+import json, sys
+from pprint import pformat, pprint
+from __main__ import cli
 
 __metaclass__ = type
 
 # not only visible to ansible-doc, it also 'declares' the options the plugin requires and how to configure them.
 DOCUMENTATION = """
-  callback: aws-events
-  callback_type: default
+  callback: cloudwatch
+  callback_type: default 
   requirements:
     - whitelist in configuration
   short_description: logs aws events
@@ -20,9 +21,9 @@ DOCUMENTATION = """
 from datetime import datetime
 
 from ansible.plugins.callback import CallbackBase
-import boto3
+#import boto3
 
-cloudwatch_events = boto3.client("events")
+#cloudwatch_events = boto3.client("events")
 
 
 class CallbackModule(CallbackBase):
@@ -32,11 +33,11 @@ class CallbackModule(CallbackBase):
     """
 
     CALLBACK_VERSION = 2.0
-    CALLBACK_TYPE = "stdout"
-    CALLBACK_NAME = "default"
+    CALLBACK_TYPE = 'notification'
+    CALLBACK_NAME = 'cloudwatch'
 
     # only needed if you ship it and don't want to enable by default
-    CALLBACK_NEEDS_WHITELIST = True
+    # CALLBACK_NEEDS_WHITELIST = True
 
     def __init__(self):
 
@@ -64,29 +65,55 @@ class CallbackModule(CallbackBase):
         #         }
         #     ]
         # )
-        print(type)
-        print(data)
+        pprint(type)
+        pprint(data)
 
     def v2_runner_on_failed(self, result, ignore_errors=False):
-        self.put_event("runnerFailed", {"host": result._host.get_name(), "dump": pformat(vars(result))})
+        self.put_event('ansible-run-failed', {
+            'host': result._host.get_name(),
+        })
+        self.put_event("runnerFailed", {"host": result._host.get_name(), "dump": vars(result)})
 
     def v2_runner_on_ok(self, result):
-        self.put_event("runnerOkay", {"host": result._host.get_name(), "dump": pformat(vars(result))})
+        if result._result['changed']:
+            self.put_event("ansible-run-task-changed", {
+                "host": result._host.get_name(),
+                "task": result._task,
+                "action": result._task_fields['action'],
+                "action_args": result._task_fields['args'],
+            })
+        else:
+            self.put_event("ansible-run-task-ok", {
+                "host": result._host.get_name(),
+                "task": result._task,
+                "action": result._task_fields['action'],
+                "action_args": result._task_fields['args'],
+            })
+        #self.put_event("runnerOkay", {"host": result._host.get_name(), "dump": vars(result)})
 
     def v2_runner_on_skipped(self, result):
-        self.put_event("runnerSkipped", {"host": result._host.get_name(), "dump": pformat(vars(result))})
+        self.put_event('ansible-run-skip', {
+            'host': result._host.get_name(),
+        })
 
     def v2_runner_on_unreachable(self, result):
-        self.put_event("runnerUnreachable", {"host": result._host.get_name(), "dump": pformat(vars(result))})
+        self.put_event('ansible-run-unreachable', {
+            'host': result._host.get_name(),
+        })
+
+    def v2_playbook_on_cleanup_task_start(self, task):
+        self.put_event('ansible-run-completed', vars(task))
+
+    def v2_playbook_on_play_start(self, play):
+        self.put_event('ansible-run-begin', {
+            'name': play.get_name().strip(),
+            'properties': play._ds,
+        })
 
     def v2_playbook_on_notify(self, handler, host):
-        self.put_event("playbookNotify", {"host": host.get_name(), "dump": pformat(vars(handler))})
-
-    def v2_playbook_on_no_hosts_matched(self):
-        self.put_event("noHostsMatched", {})
-
-    def v2_playbook_on_no_hosts_remaining(self):
-        self.put_event("noHostsRemaining", {})
-
-    def v2_playbook_on_task_start(self, task, is_conditional):
-        self.put_event("taskStart", {"task": task, "dump": pformat(vars(task))})
+        self.put_event('ansible-run-notify', {
+            'host': host.get_name(),
+        })
+    
+    def v2_playbook_on_stats(self, stats):
+        self.put_event('ansible-run-stats', vars(stats))
