@@ -9,7 +9,7 @@ __metaclass__ = type
 
 # not only visible to ansible-doc, it also 'declares' the options the plugin requires and how to configure them.
 DOCUMENTATION = """
-  callback: cloudwatch
+  callback: brady
   callback_type: default 
   requirements:
     - whitelist in configuration
@@ -21,9 +21,11 @@ DOCUMENTATION = """
 from datetime import datetime
 
 from ansible.plugins.callback import CallbackBase
-#import boto3
+import boto3
+import os
+import json
 
-#cloudwatch_events = boto3.client("events")
+cloudwatch_events = boto3.client("events")#, aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'], aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'])
 
 
 class CallbackModule(CallbackBase):
@@ -34,7 +36,7 @@ class CallbackModule(CallbackBase):
 
     CALLBACK_VERSION = 2.0
     CALLBACK_TYPE = 'notification'
-    CALLBACK_NAME = 'cloudwatch'
+    CALLBACK_NAME = 'brady'
 
     # only needed if you ship it and don't want to enable by default
     # CALLBACK_NEEDS_WHITELIST = True
@@ -50,23 +52,40 @@ class CallbackModule(CallbackBase):
     def put_event(self, type, data):
         # Create CloudWatchEvents client
         # cloudwatch_events = boto3.client("events")
-        #
-        # # Put an event
-        # response = cloudwatch_events.put_events(
-        #     Entries=[
-        #         {
-        #             "Detail": data,
-        #             "DetailType": type,
-        #             "Resources": [
-        #                 # TODO resource ARN?
-        #                 "RESOURCE_ARN",
-        #             ],
-        #             "Source": "gov.gsa.ansible",
-        #         }
-        #     ]
-        # )
+       
+        # Put an event
+        response = cloudwatch_events.put_events(
+            Entries=[
+                {
+                    #"Detail": {"instance-id": "test", "state": "terminated"},#str(data),
+                    #"DetailType": "EC2 Instance State-change Notification",
+                    #"Resources": [
+                        # TODO resource ARN?
+                    #    "RESOURCE_ARN",
+                    #],
+                    "Source": "gov.gsa.ansible",
+                    #'Time': datetime(2020, 7, 28),
+                    #'Source': 'string',
+                    #'Resources': [
+                    #    'string',
+                    #],
+                    'DetailType': 'string',
+                    'Detail': json.dumps({"test":"data"}),#data),
+                    #'EventBusName': 'string',
+                    #'Region': 'us-east-1'
+                }
+            ]
+        )
+        #print("response = " + json.dumps(response,indent=4))
         pprint(type)
         pprint(data)
+
+    def _pop_keys_by_prefix(self, d, prefix='_'):
+        for k in list(d.keys()):
+            if k.startswith(prefix):
+                d.pop(k)
+        return d
+
 
     def v2_runner_on_failed(self, result, ignore_errors=False):
         self.put_event('ansible-run-failed', {
@@ -75,21 +94,29 @@ class CallbackModule(CallbackBase):
         self.put_event("runnerFailed", {"host": result._host.get_name(), "dump": vars(result)})
 
     def v2_runner_on_ok(self, result):
+        #print(type(result._task_fields['args']))
+        #if isinstance(result._task_fields['args'], dict):
+        #    print(type(result._task_fields['args']))
+        #    print(result._task_fields['args'].keys())
+        action_args = self._pop_keys_by_prefix(result._task_fields['args'])
+        action_args = json.dumps(action_args)
+        #else:
+        #    action_args = "test"
+        #action_args = json.loads(result._task_fields['args'])
         if result._result['changed']:
             self.put_event("ansible-run-task-changed", {
                 "host": result._host.get_name(),
                 "task": result._task,
                 "action": result._task_fields['action'],
-                "action_args": result._task_fields['args'],
+                "action_args": action_args,
             })
         else:
             self.put_event("ansible-run-task-ok", {
                 "host": result._host.get_name(),
                 "task": result._task,
                 "action": result._task_fields['action'],
-                "action_args": result._task_fields['args'],
+                "action_args": action_args,
             })
-        #self.put_event("runnerOkay", {"host": result._host.get_name(), "dump": vars(result)})
 
     def v2_runner_on_skipped(self, result):
         self.put_event('ansible-run-skip', {
