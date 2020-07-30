@@ -13,3 +13,8 @@ release/
 .DS_Store
 */.DS_Store
 /.vscode
+
+## Python ##
+__pycache__
+*.iml
+*.pyc

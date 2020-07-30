@@ -1,7 +1,7 @@
 # Make coding more python3-ish, this is required for contributions to Ansible
 from __future__ import absolute_import, division, print_function
 
-import json, sys
+import sys
 from pprint import pformat, pprint
 from __main__ import cli
 
@@ -24,9 +24,77 @@ from ansible.plugins.callback import CallbackBase
 import boto3
 import os
 import json
+import uuid
+
+print(os.getenv('AWS_ACCESS_KEY_ID'))
+print(os.getenv('AWS_REGION'))
+print(os.getenv('AWS_DEFAULT_REGION'))
 
 cloudwatch_events = boto3.client("events")#, aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'], aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'])
 
+run_id = str(uuid.uuid4())
+
+STAT_OK      = 'ok'
+STAT_FAILED  = 'failed'
+STAT_SKIPPED = 'skipped'
+STAT_CHANGED = 'changed'
+STAT_UNREACHABLE = 'unreachable'
+
+class HostReport():
+    def __init__(self):
+        self.run_id = run_id
+        self.host = ""
+        self.instance_id = ""
+        self.unreachable = True
+        self.stats = {
+            STAT_OK: 0,
+            STAT_CHANGED: 0,
+            STAT_FAILED: 0,
+            STAT_SKIPPED: 0,
+        }
+        self.tasks = []
+
+    def inc_stat(self, stat, count):
+        val = self.stats.get(stat, 0)
+        self.stats[stat] = val + count
+
+    def add_task(self, state, name, action, args):
+        self.tasks.append({
+            'state': state,
+            'name': name,
+            'action': action,
+            'args': args,
+        })
+        
+    def toJSON(self):
+        return json.dumps(self.__dict__)
+
+"""
+"host": "nodename",
+"unreachable": False,
+"stats": {
+    "ok": 12,
+    "changed": 1,
+    "failed": 0,
+    "skipped": 0
+},
+"tasks": [
+    {
+        "state": "ok",    # ok, failed, skipped, changed
+        "role": "testing",
+        "name": "task 1", # task name
+        "action": "",
+        "args": ""
+    },
+    {
+        "state": "ok",    # ok, failed, skipped, changed
+        "role": "testing",
+        "name": "task 1", # task name
+        "action": "",
+        "args": ""
+    }
+]
+"""
 
 class CallbackModule(CallbackBase):
     """
@@ -49,36 +117,36 @@ class CallbackModule(CallbackBase):
         # start the timer when the plugin is loaded, the first play should start a few milliseconds after.
         self.start_time = datetime.now()
 
+        self.reports = {}
+        self.instances = {}
+
+        self._query_instances()
+
+
     def put_event(self, type, data):
-        # Create CloudWatchEvents client
-        # cloudwatch_events = boto3.client("events")
-       
+        if isinstance(data, HostReport):
+            obj = data.toJSON()
+        else:
+            obj = json.dumps(data)
+
         # Put an event
         response = cloudwatch_events.put_events(
             Entries=[
                 {
-                    #"Detail": {"instance-id": "test", "state": "terminated"},#str(data),
-                    #"DetailType": "EC2 Instance State-change Notification",
                     #"Resources": [
-                        # TODO resource ARN?
-                    #    "RESOURCE_ARN",
+                    #    ,
                     #],
                     "Source": "gov.gsa.ansible",
-                    #'Time': datetime(2020, 7, 28),
-                    #'Source': 'string',
-                    #'Resources': [
-                    #    'string',
-                    #],
-                    'DetailType': 'string',
-                    'Detail': json.dumps({"test":"data"}),#data),
-                    #'EventBusName': 'string',
-                    #'Region': 'us-east-1'
+                    'DetailType': type,
+                    'Detail': obj,
                 }
             ]
         )
-        #print("response = " + json.dumps(response,indent=4))
         pprint(type)
-        pprint(data)
+        if isinstance(data, HostReport):
+            print(data.toJSON())
+        else:
+            print(json.dumps(data))
 
     def _pop_keys_by_prefix(self, d, prefix='_'):
         for k in list(d.keys()):
@@ -86,61 +154,71 @@ class CallbackModule(CallbackBase):
                 d.pop(k)
         return d
 
+    def _query_instances(self):
+        ec2 = boto3.resource('ec2')
+        instances = ec2.instances.filter(Filters=[
+            {
+                'Name': 'instance-state-name',
+                'Values': ['running']
+            }
+        ])
+        for instance in instances:
+            name = ''
+            for t in instance.tags:
+                if t.get('Key', '') == 'Name':
+                    name = t.get('Value', '')
+            if len(name) == 0:
+                continue
+            self.instances[name] = instance.id
 
-    def v2_runner_on_failed(self, result, ignore_errors=False):
-        self.put_event('ansible-run-failed', {
-            'host': result._host.get_name(),
-        })
-        self.put_event("runnerFailed", {"host": result._host.get_name(), "dump": vars(result)})
+    def _update_reports(self, state, result):
+        hostname = result._host.get_name()
+        report = self.reports.get(hostname, HostReport())
+        report.host = hostname
 
-    def v2_runner_on_ok(self, result):
-        #print(type(result._task_fields['args']))
-        #if isinstance(result._task_fields['args'], dict):
-        #    print(type(result._task_fields['args']))
-        #    print(result._task_fields['args'].keys())
+        if state == STAT_UNREACHABLE:
+            report.unreachable = True
+            self.reports[hostname] = report
+            return
+
+        report.unreachable = False
+        report.instance_id = self.instances.get(hostname, '')
+        report.inc_stat(state, 1)
+
         action_args = self._pop_keys_by_prefix(result._task_fields['args'])
         action_args = json.dumps(action_args)
-        #else:
-        #    action_args = "test"
-        #action_args = json.loads(result._task_fields['args'])
+        report.add_task(state, str(result._task), str(result._task_fields['action']), action_args)
+
+        print(hostname)
+        print(report)
+        self.reports[hostname] = report
+
+    def v2_runner_on_failed(self, result, ignore_errors=False):
+        self._update_reports(STAT_FAILED, result)
+
+    def v2_runner_on_ok(self, result):
         if result._result['changed']:
-            self.put_event("ansible-run-task-changed", {
-                "host": result._host.get_name(),
-                "task": result._task,
-                "action": result._task_fields['action'],
-                "action_args": action_args,
-            })
+            self._update_reports(STAT_CHANGED, result)
         else:
-            self.put_event("ansible-run-task-ok", {
-                "host": result._host.get_name(),
-                "task": result._task,
-                "action": result._task_fields['action'],
-                "action_args": action_args,
-            })
+            self._update_reports(STAT_OK, result)
 
     def v2_runner_on_skipped(self, result):
-        self.put_event('ansible-run-skip', {
-            'host': result._host.get_name(),
-        })
+        self._update_reports(STAT_SKIPPED, result)
 
     def v2_runner_on_unreachable(self, result):
-        self.put_event('ansible-run-unreachable', {
-            'host': result._host.get_name(),
-        })
-
-    def v2_playbook_on_cleanup_task_start(self, task):
-        self.put_event('ansible-run-completed', vars(task))
+        self._update_reports(STAT_UNREACHABLE, result)
 
     def v2_playbook_on_play_start(self, play):
-        self.put_event('ansible-run-begin', {
+        self.put_event('ansible-run-start', {
             'name': play.get_name().strip(),
+            'run_id': run_id,
             'properties': play._ds,
-        })
-
-    def v2_playbook_on_notify(self, handler, host):
-        self.put_event('ansible-run-notify', {
-            'host': host.get_name(),
         })
     
     def v2_playbook_on_stats(self, stats):
-        self.put_event('ansible-run-stats', vars(stats))
+        for k, v in self.reports.items():
+            self.put_event('ansible-run-report', v)
+
+        obj = vars(stats)
+        obj['run_id'] = run_id
+        self.put_event('ansible-run-end', obj)

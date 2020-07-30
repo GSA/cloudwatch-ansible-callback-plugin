@@ -9,6 +9,12 @@ unset AWS_SECRET_ACCESS_KEY
 unset AWS_SESSION_TOKEN
 
 PROFILE=$1
+
+if [[ "x$PROFILE" == "x" ]]; then
+	echo "Please provide a profile name as the first parameter"
+	exit 1
+fi
+
 resp=$(aws iam list-mfa-devices --profile $PROFILE 2>&1)
 
 if [[ $resp == *"User"*"is not authorized"* ]]; then
@@ -24,7 +30,7 @@ echo "Enter token code"
 
 read token
 
-resp=$(aws sts get-session-token --serial-number $device_sn --token-code $token --profile $PROFILE)
+resp=$(aws sts get-session-token --serial-number $device_sn --token-code $token --duration-seconds 129600 --profile $PROFILE)
 
 echo $resp
 
