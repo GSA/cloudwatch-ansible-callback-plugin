@@ -9,7 +9,7 @@ __metaclass__ = type
 
 # not only visible to ansible-doc, it also 'declares' the options the plugin requires and how to configure them.
 DOCUMENTATION = """
-  callback: brady
+  callback: cloudwatch
   callback_type: default 
   requirements:
     - whitelist in configuration
@@ -36,7 +36,7 @@ class CallbackModule(CallbackBase):
 
     CALLBACK_VERSION = 2.0
     CALLBACK_TYPE = 'notification'
-    CALLBACK_NAME = 'brady'
+    CALLBACK_NAME = 'cloudwatch'
 
     # only needed if you ship it and don't want to enable by default
     # CALLBACK_NEEDS_WHITELIST = True
